@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Food Healing Chart</title>
+</head>
+<body style="margin: 0px !important; overflow: clip;">
+    <div style="position: absolute; top: 10px; right: 10px; z-index: 1000;">
+        <select id="renderer-select" style="
+            padding: 8px 12px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+        ">
+            <option value="regen-instant" selected>Regen Instant</option>
+            <option value="regen-timed">Regen Timed</option>
+            <option value="regen-chance">Regen Chance</option>
+            <option value="revive-instant">Revive Instant</option>
+            <option value="revive-timed" disabled>Revive Timed (No Data)</option>
+            <option value="revive-chance" disabled>Revive Chance (No Data)</option>
+        </select>
+    </div>
+    <div id="container" style="width:100vw;height:100vh; background: white;"></div>
+    <div id="tooltip" style="
+        position: absolute;
+        background: white;
+        padding: 4px 6px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 12px;
+        pointer-events: none;
+        display: none;
+    "></div>
+    <script type="module">
+        import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
+        
+        import { renderFixedPoints } from './renderers/renderFixedPoints.js';
+        import { renderTimedPoints } from './renderers/renderTimedPoints.js';
+        import { renderTimedLines } from './renderers/renderTimedLines.js';
+        import { renderChancePoints } from './renderers/renderChancePoints.js';
+        import { renderChanceLines } from './renderers/renderChanceLines.js';
+        import { renderRevivalPoints } from './renderers/renderRevivalPoints.js';
+
+        // Constants
+        const MARGIN = { top: 20, right: 20, bottom: 30, left: 40 };
+        const FOOD_TYPES = {
+            INSTANT: 'instant',
+            TIMED: 'timed',
+            CHANCE: 'chance'
+        };
+        const FOOD_QUALITIES = {
+            DELICIOUS: 'FOOD_QUALITY_DELICIOUS',
+            STRANGE: 'FOOD_QUALITY_STRANGE',
+            ORDINARY: 'FOOD_QUALITY_ORDINARY'
+        };
+
+        // DOM Elements
+        const chart = document.getElementById('container');
+        const tooltip = d3.select('#tooltip');
+        const svg = d3.select(chart).append('svg');
+
+        // SVG Groups
+        const g = svg.append('g');
+        const xAxisG = g.append('g');
+        const yAxisG = g.append('g');
+        const pointsG = g.append('g');
+        const pointsTimedG = g.append('g');
+        const pointsChanceG = g.append('g');
+        const pointsRevivalG = g.append('g');
+        const lineG = g.append('g').attr('class', 'lines');
+        const chanceLineG = g.append('g').attr('class', 'chance-lines');
+
+        // Scales
+        const x = d3.scaleLinear();
+        const y = d3.scaleLinear();
+
+        // State
+        let width, height, innerWidth, innerHeight;
+        let data = [];
+        let fixedData = [];
+        let timedData = [];
+        let timedPointData = [];
+        let chanceData = [];
+        let chancePointData = [];
+        let revivalData = [];
+        let revivalFixedData = [];
+        let currentRenderer = 'regen-instant';
+
+        // Helper Functions
+        function formatName({ name, quality, stars, healing: { type } }) {
+            const typePrefix = type === FOOD_TYPES.TIMED ? 'Timed ' : 
+                             type === FOOD_TYPES.CHANCE ? 'Chance ' : '';
+
+            let baseName = name;
+            let qualityName = quality;
+
+            if (quality === FOOD_QUALITIES.DELICIOUS) {
+                qualityName = 'Delicious ';
+                if (name.startsWith('Delicious ')) {
+                    baseName = name.substring(10);
+                }
+            } else if (quality === FOOD_QUALITIES.STRANGE) {
+                qualityName = 'Suspicious ';
+                if (name.startsWith('Suspicious ')) {
+                    baseName = name.substring(11);
+                }
+            } else if (quality === FOOD_QUALITIES.ORDINARY) {
+                qualityName = '';
+            }
+
+            return `${baseName} (${typePrefix}${qualityName}${stars}*)`;
+        }
+
+        function getMaxValue(items, accessor) {
+            return d3.extent(items, d => accessor(d).toSorted((a, b) => b - a)[0]);
+        }
+
+        function fullExtent() {
+            if (currentRenderer === 'revive-instant') {
+                const xExtent = d3.extent(revivalFixedData, d => d.healing.percent);
+                const yExtent = d3.extent(revivalFixedData, d => d.healing.fixed);
+
+                return {
+                    x: [0, Math.max(10, xExtent[1] * 1.1)],
+                    y: [0, Math.max(10, yExtent[1] * 1.1)]
+                };
+            } else if (currentRenderer === 'regen-instant') {
+                const xExtent = d3.extent(fixedData, d => d.healing.percent);
+                const yExtent = d3.extent(fixedData, d => d.healing.fixed);
+
+                return {
+                    x: [0, Math.max(10, xExtent[1] * 1.1)],
+                    y: [0, Math.max(10, yExtent[1] * 1.1)]
+                };
+            } else if (currentRenderer === 'regen-timed') {
+                const xExtent = getMaxValue(timedData, d => d.healing.steps.map(s => s.percent));
+                const yExtent = getMaxValue(timedData, d => d.healing.steps.map(s => s.fixed));
+
+                return {
+                    x: [0, Math.max(10, xExtent[1] * 1.1)],
+                    y: [0, Math.max(10, yExtent[1] * 1.1)]
+                };
+            } else if (currentRenderer === 'regen-chance') {
+                const xExtent = getMaxValue(chanceData, d => d.healing.outcomes.map(o => o.percent));
+                const yExtent = getMaxValue(chanceData, d => d.healing.outcomes.map(o => o.fixed));
+
+                return {
+                    x: [0, Math.max(10, xExtent[1] * 1.1)],
+                    y: [0, Math.max(10, yExtent[1] * 1.1)]
+                };
+            }
+            
+            // Default: show all
+            const xInstantExtent = d3.extent(fixedData, d => d.healing.percent);
+            const yInstantExtent = d3.extent(fixedData, d => d.healing.fixed);
+            const xTimedExtent = getMaxValue(timedData, d => d.healing.steps.map(s => s.percent));
+            const yTimedExtent = getMaxValue(timedData, d => d.healing.steps.map(s => s.fixed));
+            const xChanceExtent = getMaxValue(chanceData, d => d.healing.outcomes.map(o => o.percent));
+            const yChanceExtent = getMaxValue(chanceData, d => d.healing.outcomes.map(o => o.fixed));
+            const xRevivalExtent = d3.extent(revivalFixedData, d => d.healing.percent);
+            const yRevivalExtent = d3.extent(revivalFixedData, d => d.healing.fixed);
+
+            return {
+                x: [
+                    Math.min(10, xInstantExtent[0], xTimedExtent[0], xChanceExtent[0], xRevivalExtent[0]),
+                    Math.max(0, xInstantExtent[1], xTimedExtent[1], xChanceExtent[1], xRevivalExtent[1])
+                ],
+                y: [
+                    Math.min(10, yInstantExtent[0], yTimedExtent[0], yChanceExtent[0], yRevivalExtent[0]),
+                    Math.max(0, yInstantExtent[1], yTimedExtent[1], yChanceExtent[1], yRevivalExtent[1])
+                ]
+            };
+        }
+
+        function positionTooltip(event) {
+            const tooltipNode = tooltip.node();
+            const tooltipWidth = tooltipNode.offsetWidth;
+            const tooltipHeight = tooltipNode.offsetHeight;
+
+            let left = event.pageX - tooltipWidth - 10;
+            let top = event.pageY + 10;
+
+            if (top + tooltipHeight > window.innerHeight) {
+                top = event.pageY - tooltipHeight - 10;
+            }
+
+            if (left < 0) {
+                left = event.pageX + 10;
+            }
+
+            return { left, top };
+        }
+
+        function showTooltip(event, content) {
+            const { left, top } = positionTooltip(event);
+            tooltip
+                .style('display', 'block')
+                .style('left', `${left}px`)
+                .style('top', `${top}px`)
+                .html(content);
+        }
+
+        function hideTooltip() {
+            tooltip.style('display', 'none');
+        }
+
+        // Render Functions
+        function render() {
+            // Clear all groups
+            pointsG.selectAll('*').remove();
+            pointsTimedG.selectAll('*').remove();
+            pointsChanceG.selectAll('*').remove();
+            pointsRevivalG.selectAll('*').remove();
+            lineG.selectAll('*').remove();
+            chanceLineG.selectAll('*').remove();
+
+            // Render based on current renderer
+            if (currentRenderer === 'regen-instant') {
+                renderFixedPoints(pointsG, fixedData, x, y, showTooltip, hideTooltip, formatName);
+            } else if (currentRenderer === 'regen-timed') {
+                renderTimedPoints(pointsTimedG, timedPointData, x, y, showTooltip, hideTooltip, formatName, timedData);
+                renderTimedLines(lineG, timedData, x, y);
+            } else if (currentRenderer === 'regen-chance') {
+                renderChancePoints(pointsChanceG, chancePointData, x, y, showTooltip, hideTooltip, formatName, chanceData);
+                renderChanceLines(chanceLineG, chanceData, x, y);
+            } else if (currentRenderer === 'revive-instant') {
+                renderRevivalPoints(pointsRevivalG, revivalFixedData, x, y, showTooltip, hideTooltip, formatName);
+            }
+
+            // Ensure correct z-order
+            chanceLineG.raise();
+            lineG.raise();
+            pointsChanceG.raise();
+            pointsTimedG.raise();
+            pointsG.raise();
+            pointsRevivalG.raise();
+        }
+
+        function resize() {
+            width = chart.clientWidth;
+            height = chart.clientHeight;
+            svg.attr('width', width).attr('height', height);
+
+            innerWidth = width - MARGIN.left - MARGIN.right;
+            innerHeight = height - MARGIN.top - MARGIN.bottom;
+
+            g.attr('transform', `translate(${MARGIN.left},${MARGIN.top})`);
+            
+            const extent = fullExtent();
+            x.domain(extent.x).range([0, innerWidth]);
+            y.domain(extent.y).range([innerHeight, 0]);
+            
+            xAxisG.attr('transform', `translate(0,${innerHeight})`).call(d3.axisBottom(x));
+            yAxisG.call(d3.axisLeft(y));
+
+            render();
+        }
+
+        // Initialize
+        d3.json('./data.json').then(json => {
+            data = json.healing;
+            fixedData = data.filter(d => d.healing.type === FOOD_TYPES.INSTANT);
+            timedData = data.filter(d => d.healing.type === FOOD_TYPES.TIMED);
+            timedPointData = timedData.map(v => 
+                [v.healing.base, ...v.healing.steps
+                    .toSorted((a, b) => b.tick - a.tick)
+                    .map(step => ({ ...step, maxTicks: v.healing.steps.length }))]
+            ).flat();
+            chanceData = data.filter(d => d.healing.type === FOOD_TYPES.CHANCE);
+            chancePointData = chanceData.map(v => 
+                v.healing.outcomes
+                    .toSorted((a, b) => b.percent - a.percent)
+                    .map(outcome => ({ ...outcome, id: v.id }))
+            ).flat();
+            
+            revivalData = json.revival || [];
+            revivalFixedData = revivalData.filter(d => d.healing.type === FOOD_TYPES.INSTANT);
+            
+            // Reset dropdown to default value
+            document.getElementById('renderer-select').value = 'regen-instant';
+            currentRenderer = 'regen-instant';
+            
+            resize();
+        });
+
+        // Dropdown event listener
+        document.getElementById('renderer-select').addEventListener('change', (event) => {
+            currentRenderer = event.target.value;
+            resize();
+        });
+
+        window.addEventListener('resize', resize);
+    </script>
+</body>
+</html>

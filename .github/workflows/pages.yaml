@@ -1,0 +1,31 @@
+name: Build and Deploy
+on: [push]
+permissions:
+  contents: write
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@v4
+
+      - name: Download necessary data files
+        run: |
+          wget -O MaterialExcelConfigData.json https://gitlab.com/Dimbreath/AnimeGameData/-/raw/master/ExcelBinOutput/MaterialExcelConfigData.json?ref_type=heads
+          wget -O BuffExcelConfigData.json https://gitlab.com/Dimbreath/AnimeGameData/-/raw/master/ExcelBinOutput/BuffExcelConfigData.json?ref_type=heads
+          wget -O ItemAbilities.json https://gitlab.com/Dimbreath/AnimeGameData/-/raw/master/BinOutput/Ability/Temp/ItemAbilities.json?ref_type=heads
+          wget -O TextMapEN.json https://gitlab.com/Dimbreath/AnimeGameData/-/raw/master/TextMap/TextMapEN.json?ref_type=heads
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Build metadata file
+        run: |
+          python main.py
+      
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: .
